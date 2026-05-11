@@ -1,6 +1,7 @@
 from typing import Union
 
 import numpy as np
+import torch
 from scipy.integrate import odeint
 
 
@@ -11,9 +12,10 @@ class Kuramoto:
         self,
         coupling: float = 1,
         dt: float = 0.01,
-        T: float = 10,
+        T: float = 30,
         n_nodes: Union[int, None] = None,
         natfreqs: Union[np.ndarray, None] = None,
+        cur: Union[np.ndarray, None] = None
     ):
         """
         coupling: float
@@ -39,14 +41,17 @@ class Kuramoto:
 
         self.dt = dt
         self.T = T
-        self.coupling = coupling
+        c = np.full(n_nodes, coupling, dtype=np.float32)
+        self.cur = torch.from_numpy(c).to(device='cuda', dtype=torch.float32)
+        self.coupling = coupling 
 
         if natfreqs is not None:
             self.natfreqs = natfreqs
             self.n_nodes = len(natfreqs)
         else:
             self.n_nodes = n_nodes
-            self.natfreqs = np.random.normal(size=self.n_nodes)
+            temp =  np.random.normal(size=self.n_nodes)
+            self.natfreqs = torch.from_numpy(temp).to(device='cuda')
 
      #6 -5
     def init_angles(self):
@@ -70,14 +75,17 @@ class Kuramoto:
             len(angles_vec) == len(self.natfreqs) == len(adj_mat)
         ), "Input dimensions do not match, check lengths"
 
-        angles_i, angles_j = np.meshgrid(angles_vec, angles_vec)
-        interactions = adj_mat * np.sin(angles_j - angles_i)  # Aij * sin(j-i)
-
+        angles_t = torch.from_numpy(angles_vec).to(device='cuda')
+        angles_i, angles_j = torch.meshgrid(angles_t, angles_t)
+        interactions = self.adj_mat_t * torch.sin(angles_j - angles_i)  # Aij * sin(j-i)
+        
         # sum over incoming interactions
-        dxdt = self.natfreqs + coupling * interactions.sum(axis=0)
-        return dxdt
+        dxdt = self.natfreqs + self.cur * interactions.sum(axis=0)
+        new = torch.Tensor.cpu(dxdt)
+        return new
 
      #8 -2
+
     def integrate(self, angles_vec, adj_mat):
         """Updates all states by integrating state of all nodes"""
         # Coupling term (k / Mj) is constant in the integrated time window.
@@ -87,11 +95,14 @@ class Kuramoto:
             self.coupling / n_interactions
         )  # normalize coupling by number of interactions
 
+        self.adj_mat_t = torch.from_numpy(adj_mat).to(device='cuda')
+
         t = np.linspace(0, self.T, int(self.T / self.dt))
         timeseries = odeint(self.derivative, angles_vec, t, args=(adj_mat, coupling))
         return timeseries.T  # transpose for consistency (act_mat:node vs time)
 
      #8 -2
+    
     def run(self, adj_mat=None, angles_vec=None):
         """
         adj_mat: 2D nd array
@@ -141,3 +152,16 @@ class Kuramoto:
         # Average across complete time window - mean angular velocity (freq.)
         meanfreq = integral / self.T
         return meanfreq
+
+if __name__ == "__main__":
+    n_nodes = 200
+    arr = np.ones((n_nodes, n_nodes), dtype=np.float64)
+    for n in range(n_nodes):
+        arr[n][n] = 0
+    
+    model = Kuramoto(
+        n_nodes = n_nodes,
+        coupling = 1.95
+    )
+
+    activity = model.run(adj_mat=arr)
