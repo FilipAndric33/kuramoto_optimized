@@ -3,11 +3,14 @@ from typing import Union
 import numpy as np
 import torch
 from scipy.integrate import odeint
+import sys, os
+
+sys.path.insert(0, os.path.dirname(__file__))
+import cythonfn
 
 
 class Kuramoto:
 
-    
     def __init__(
         self,
         coupling: float = 1,
@@ -36,77 +39,123 @@ class Kuramoto:
             Must be specified if n_nodes is not given.
             If given, it overrides the n_nodes argument.
         """
-        if n_nodes is None and natfreqs is None:
-            raise ValueError("n_nodes or natfreqs must be specified")
 
         self.dt = dt
         self.T = T
+
         c = np.full(n_nodes, coupling, dtype=np.float32)
         self.cur = torch.from_numpy(c).to(device='cuda', dtype=torch.float32)
-        self.coupling = coupling 
+
+        self.coupling = coupling
 
         if natfreqs is not None:
             self.natfreqs = natfreqs
             self.n_nodes = len(natfreqs)
         else:
             self.n_nodes = n_nodes
-            temp =  np.random.normal(size=self.n_nodes)
+            temp = np.random.normal(size=self.n_nodes)
             self.natfreqs = torch.from_numpy(temp).to(device='cuda')
 
-     #6 -5
     def init_angles(self):
         """
         Random initial random angles (position, "theta").
         """
         return 2 * np.pi * np.random.random(size=self.n_nodes)
 
-     #8 -2
-    def derivative(self, angles_vec, t, adj_mat, coupling):
-        """
-        Compute derivative of all nodes for current state, defined as
+    def _derivative_gpu(self, angles_t):
+        angles_i, angles_j = torch.meshgrid(
+            angles_t,
+            angles_t,
+            indexing='xy'
+        )
 
-        dx_i    natfreq_i + k  sum_j ( Aij* sin (angle_j - angle_i) )
-        ---- =             ---
-         dt                M_i
+        interactions = self.adj_mat_t * torch.sin(angles_j - angles_i)
 
-        t: Not used, kept for compatibility with scipy.odeint
-        """
-        assert (
-            len(angles_vec) == len(self.natfreqs) == len(adj_mat)
-        ), "Input dimensions do not match, check lengths"
-
-        angles_t = torch.from_numpy(angles_vec).to(device='cuda')
-        angles_i, angles_j = torch.meshgrid(angles_t, angles_t)
-        interactions = self.adj_mat_t * torch.sin(angles_j - angles_i)  # Aij * sin(j-i)
-        
-        # sum over incoming interactions
-        dxdt = self.natfreqs + self.cur * interactions.sum(axis=0)
-        new = torch.Tensor.cpu(dxdt)
-        return new
-
-     #8 -2
+        return self.natfreqs + self.cur * interactions.sum(axis=0)
 
     def integrate(self, angles_vec, adj_mat):
-        """Updates all states by integrating state of all nodes"""
-        # Coupling term (k / Mj) is constant in the integrated time window.
-        # Compute it only once here and pass it to the derivative function
-        n_interactions = (adj_mat != 0).sum(axis=0)  # number of incoming interactions
-        coupling = (
-            self.coupling / n_interactions
-        )  # normalize coupling by number of interactions
 
-        self.adj_mat_t = torch.from_numpy(adj_mat).to(device='cuda')
+        n_interactions = (adj_mat != 0).sum(axis=0)
 
-        t = np.linspace(0, self.T, int(self.T / self.dt))
-        timeseries = odeint(self.derivative, angles_vec, t, args=(adj_mat, coupling))
-        return timeseries.T  # transpose for consistency (act_mat:node vs time)
+        coupling_np = self.coupling / n_interactions
 
-     #8 -2
-    
+        self.cur = torch.from_numpy(
+            coupling_np
+        ).to(device='cuda', dtype=torch.float32)
+
+        self.adj_mat_t = torch.from_numpy(
+            adj_mat
+        ).to(device='cuda', dtype=torch.float32)
+
+        angles_t = torch.from_numpy(
+            angles_vec
+        ).to(device='cuda', dtype=torch.float32)
+
+        steps = int(self.T / self.dt)
+
+        results = torch.zeros(
+            (steps, self.n_nodes),
+            device='cuda'
+        )
+
+        for i in range(steps):
+
+            k1 = self._derivative_gpu(angles_t)
+
+            k2 = self._derivative_gpu(
+                angles_t + 0.5 * self.dt * k1
+            )
+
+            k3 = self._derivative_gpu(
+                angles_t + 0.5 * self.dt * k2
+            )
+
+            k4 = self._derivative_gpu(
+                angles_t + self.dt * k3
+            )
+
+            angles_t = angles_t + (
+                self.dt / 6
+            ) * (
+                k1 + 2 * k2 + 2 * k3 + k4
+            )
+
+            results[i] = angles_t
+
+        return results.cpu().numpy().T
+
+    @staticmethod
+    def phase_coherence(angles_vec):
+
+        return cythonfn.phase_coherence(
+            np.asarray(angles_vec, dtype=np.float64)
+        )
+
+    def mean_frequency(self, act_mat, adj_mat):
+
+        return cythonfn.mean_frequency(
+            np.ascontiguousarray(
+                act_mat,
+                dtype=np.float64
+            ),
+            np.ascontiguousarray(
+                adj_mat,
+                dtype=np.float64
+            ),
+            np.ascontiguousarray(
+                self.natfreqs.cpu().numpy(),
+                dtype=np.float64
+            ),
+            float(self.coupling),
+            float(self.dt),
+            float(self.T),
+        )
+
     def run(self, adj_mat=None, angles_vec=None):
         """
         adj_mat: 2D nd array
             Adjacency matrix representing connectivity.
+
         angles_vec: 1D ndarray, optional
             States vector of nodes representing the position in radians.
             If not specified, random initialization [0, 2pi].
@@ -117,51 +166,8 @@ class Kuramoto:
             Activity matrix: node vs time matrix with the time series of all
             the nodes.
         """
+
         if angles_vec is None:
             angles_vec = self.init_angles()
 
         return self.integrate(angles_vec, adj_mat)
-
-    @staticmethod
-    def phase_coherence(angles_vec):
-        """
-        Compute global order parameter R_t - mean length of resultant vector
-        """
-        suma = sum([(np.e ** (1j * i)) for i in angles_vec])
-        return abs(suma / len(angles_vec))
-
-    def mean_frequency(self, act_mat, adj_mat):
-        """
-        Compute average frequency within the time window (self.T) for all nodes
-        """
-        assert len(adj_mat) == act_mat.shape[0], "adj_mat does not match act_mat"
-        _, n_steps = act_mat.shape
-
-        # Compute derivative for all nodes for all time steps
-        dxdt = np.zeros_like(act_mat)
-        for time in range(n_steps):
-            dxdt[:, time] = self.derivative(
-                angles_vec=act_mat[:, time],
-                t=None,
-                adj_mat=adj_mat,
-                coupling=self.coupling,
-            )
-
-        # Integrate all nodes over the time window T
-        integral = np.sum(dxdt * self.dt, axis=1)
-        # Average across complete time window - mean angular velocity (freq.)
-        meanfreq = integral / self.T
-        return meanfreq
-
-if __name__ == "__main__":
-    n_nodes = 200
-    arr = np.ones((n_nodes, n_nodes), dtype=np.float64)
-    for n in range(n_nodes):
-        arr[n][n] = 0
-    
-    model = Kuramoto(
-        n_nodes = n_nodes,
-        coupling = 1.95
-    )
-
-    activity = model.run(adj_mat=arr)
