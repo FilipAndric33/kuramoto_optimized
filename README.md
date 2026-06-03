@@ -9,15 +9,15 @@ The dask_simulation.py simulation is optimized for running multiple instances of
 
 Results achieved by the optimizations implemented are best represented via graphs.
 
-![png](https://github.com/FilipAndric33/kuramoto_optimized/tree/master/plots/01_full_model_run.png)
+![Full model run](plots/01_full_model_run.png)
 
-![png](https://github.com/FilipAndric33/kuramoto_optimized/tree/master/plots/02_phase_coherence.png)
+![Phase coherence](plots/02_phase_coherence.png)
 
-![png](https://github.com/FilipAndric33/kuramoto_optimized/tree/master/plots/03_mean_frequency.png)
+![Mean frequency](plots/03_mean_frequency.png)
 
-![png](https://github.com/FilipAndric33/kuramoto_optimized/tree/master/plots/04_dask_unoptimized.png)
+![Dask unoptimized](plots/04_dask_unoptimized.png)
 
-![png](https://github.com/FilipAndric33/kuramoto_optimized/tree/master/plots/07_speedup_overview.png)
+![Speedup overview](plots/07_speedup_overview.png)
 
 ## Kuramoto model 101
 - The [Kuramoto model](https://en.wikipedia.org/wiki/Kuramoto_model) is used to study a wide range of systems with synchronization behaviour.
@@ -52,26 +52,6 @@ A couple of facts in order to gain intuition about the model's behaviour:
 - The higher the dimension of the lattice on which the oscillators are embedded, the easier it is to synchronize. For example, there isn't any good synchronization in one dimension, even with strong coupling. In two dimensions it is not clear yet. From 3 dimensions on, the model starts behaving more like the mean field prediction.
 
 For more and better details, [this talk](https://www.youtube.com/watch?v=5zFDMyQ8z8g) by the great Steven Strogatz is a nice primer. Also, visiting the original repo.
-
-## Tests
-Run tests with
-```bash
-make test
-```
-
-## Citing
-
-If you find this package useful for a publication, then please use the following BibTeX to cite it:
-```
-@misc{kuramoto,
-  author = {Damicelli, Fabrizio},
-  title = {Python implementation of the Kuramoto model},
-  year = {2019},
-  publisher = {GitHub},
-  journal = {GitHub repository},
-  howpublished = {\url{https://github.com/fabridamicelli/kuramoto}},
-}
-```
 
 ## References & links 
 - [English, 2008](http://doi.org/10.1088/0143-0807/29/1/015). Synchronization of oscillators: an ideal introduction to phase transitions.
